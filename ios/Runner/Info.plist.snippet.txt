@@ -1,0 +1,4 @@
+Add this key to ios/Runner/Info.plist for camera-based barcode scanning:
+
+<key>NSCameraUsageDescription</key>
+<string>Camera access is needed to scan product barcodes.</string>

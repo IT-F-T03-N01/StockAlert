@@ -1,0 +1,32 @@
+name: pharmacy_inventory_frontend
+description: Pharmacy inventory, expiry tracking, barcode scanning UI and supplier order management — frontend only, in-memory data, no backend/database.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.6
+
+  # State management (in-memory only — no persistence, no backend)
+  provider: ^6.1.2
+
+  # Barcode scanning (camera) + generation
+  mobile_scanner: ^5.2.3
+
+  # Utilities
+  intl: ^0.19.0
+  uuid: ^4.4.2
+  crypto: ^3.0.3
+  fl_chart: ^0.68.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
