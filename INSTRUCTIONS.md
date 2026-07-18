@@ -8,7 +8,7 @@ Community pharmacy inventory and expiry tracker with barcode scanning and suppli
 - and cd into it
 `cd StockAlert`
 - run the following commands
-- `git checkout -b develop`
+- `git checkout -b antistock`
 - `git pull origin antistock`
 - `ls` to view the files
 
