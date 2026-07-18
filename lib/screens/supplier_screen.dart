@@ -3,6 +3,22 @@ import '../models/medicine.dart';
 import '../models/supplier_order.dart';
 import '../services/database_helper.dart';
 
+class SuppliedBatchEntry {
+  final TextEditingController batchController;
+  final TextEditingController qtyController;
+  DateTime expiryDate;
+  Medicine? selectedExistingBatch;
+
+  SuppliedBatchEntry({
+    required String initialBatch,
+    required String initialQty,
+    required DateTime initialExpiry,
+    this.selectedExistingBatch,
+  })  : batchController = TextEditingController(text: initialBatch),
+        qtyController = TextEditingController(text: initialQty),
+        expiryDate = initialExpiry;
+}
+
 class SupplierScreen extends StatefulWidget {
   const SupplierScreen({super.key});
 
@@ -164,18 +180,19 @@ class _SupplierScreenState extends State<SupplierScreen> with SingleTickerProvid
     _tabController.animateTo(1);
   }
 
-  // Receive and check-in procurement items
+  // Receive and check-in procurement items (allowing multiple batch allocations per ordered item)
   Future<void> _checkInOrder(SupplierOrder order) async {
     final inventory = await DatabaseHelper.instance.getInventory();
-    final List<TextEditingController> batchControllers = [];
-    final List<DateTime> expiryDates = [];
+    final Map<String, List<SuppliedBatchEntry>> suppliedEntries = {};
 
-    for (int i = 0; i < order.items.length; i++) {
-      final initials = order.supplierName.split(' ').map((e) => e.isNotEmpty ? e[0] : '').join().toUpperCase();
-      batchControllers.add(TextEditingController(
-        text: 'B-$initials-${DateTime.now().month}${DateTime.now().day}'
-      ));
-      expiryDates.add(DateTime.now().add(const Duration(days: 365)));
+    for (final item in order.items) {
+      suppliedEntries[item.barcode] = [
+        SuppliedBatchEntry(
+          initialBatch: '',
+          initialQty: item.quantity.toString(),
+          initialExpiry: DateTime.now().add(const Duration(days: 365)),
+        )
+      ];
     }
 
     if (!mounted) return;
@@ -194,12 +211,12 @@ class _SupplierScreenState extends State<SupplierScreen> with SingleTickerProvid
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       const Text(
-                        'Confirm supplied batch details for each received medication:',
-                        style: TextStyle(fontSize: 13, color: Colors.grey),
+                        'Confirm batch details for received medication. Click "Add Batch Split" if the item arrives in multiple batches:',
+                        style: TextStyle(fontSize: 12, color: Colors.grey),
                       ),
                       const SizedBox(height: 12),
-                      ...List.generate(order.items.length, (index) {
-                        final item = order.items[index];
+                      ...order.items.map((item) {
+                        final entries = suppliedEntries[item.barcode]!;
                         return Card(
                           margin: const EdgeInsets.only(bottom: 12),
                           elevation: 0,
@@ -212,48 +229,178 @@ class _SupplierScreenState extends State<SupplierScreen> with SingleTickerProvid
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(
-                                  item.name,
-                                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-                                ),
-                                Text(
-                                  'Ordered Qty: ${item.quantity}',
-                                  style: const TextStyle(fontSize: 12, color: Colors.grey),
-                                ),
-                                const SizedBox(height: 10),
-                                TextFormField(
-                                  controller: batchControllers[index],
-                                  decoration: const InputDecoration(
-                                    labelText: 'Supplied Batch Number *',
-                                    isDense: true,
-                                    border: OutlineInputBorder(),
-                                  ),
-                                ),
-                                const SizedBox(height: 8),
                                 Row(
                                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                   children: [
-                                    const Text('Expiry Date:', style: TextStyle(fontSize: 12)),
-                                    OutlinedButton(
-                                      onPressed: () async {
-                                        final d = await showDatePicker(
-                                          context: ctx,
-                                          initialDate: expiryDates[index],
-                                          firstDate: DateTime.now().subtract(const Duration(days: 30)),
-                                          lastDate: DateTime.now().add(const Duration(days: 3650)),
-                                        );
-                                        if (d != null) {
-                                          setModalState(() {
-                                            expiryDates[index] = d;
-                                          });
-                                        }
-                                      },
+                                    Expanded(
                                       child: Text(
-                                        '${expiryDates[index].month}/${expiryDates[index].day}/${expiryDates[index].year}',
-                                        style: const TextStyle(fontSize: 11),
+                                        item.name,
+                                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
                                       ),
                                     ),
+                                    Text(
+                                      'Ordered: ${item.quantity}',
+                                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                                    ),
                                   ],
+                                ),
+                                const Divider(height: 16),
+                                ...List.generate(entries.length, (index) {
+                                  final entry = entries[index];
+                                  final existingMatches = inventory.where((m) => m.barcode == item.barcode).toList();
+                                  
+                                  return Container(
+                                    margin: const EdgeInsets.only(bottom: 12),
+                                    padding: const EdgeInsets.all(8),
+                                    decoration: BoxDecoration(
+                                      color: Theme.of(context).dividerColor.withOpacity(0.05),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Row(
+                                          children: [
+                                            Expanded(
+                                              child: DropdownButtonFormField<Medicine?>(
+                                                value: entry.selectedExistingBatch,
+                                                isExpanded: true,
+                                                decoration: const InputDecoration(
+                                                  labelText: 'Batch Allocation *',
+                                                  isDense: true,
+                                                  contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                                                  border: OutlineInputBorder(),
+                                                ),
+                                                items: [
+                                                  const DropdownMenuItem<Medicine?>(
+                                                    value: null,
+                                                    child: Text('New Batch', style: TextStyle(fontSize: 12)),
+                                                  ),
+                                                  ...existingMatches.map((b) => DropdownMenuItem<Medicine?>(
+                                                    value: b,
+                                                    child: Text(
+                                                      'Previous Batch: ${b.batchNumber}',
+                                                      style: const TextStyle(fontSize: 12),
+                                                    ),
+                                                  )),
+                                                ],
+                                                onChanged: (selected) {
+                                                  setModalState(() {
+                                                    entry.selectedExistingBatch = selected;
+                                                    if (selected != null) {
+                                                      entry.batchController.text = selected.batchNumber;
+                                                      entry.expiryDate = selected.expiryDate;
+                                                    } else {
+                                                      entry.batchController.text = '';
+                                                    }
+                                                  });
+                                                },
+                                              ),
+                                            ),
+                                            if (entries.length > 1) ...[
+                                              const SizedBox(width: 8),
+                                              IconButton(
+                                                icon: const Icon(Icons.remove_circle_outline, color: Colors.red, size: 20),
+                                                padding: EdgeInsets.zero,
+                                                constraints: const BoxConstraints(),
+                                                onPressed: () {
+                                                  setModalState(() {
+                                                    entries.removeAt(index);
+                                                  });
+                                                },
+                                              ),
+                                            ],
+                                          ],
+                                        ),
+                                        const SizedBox(height: 8),
+                                        Row(
+                                          crossAxisAlignment: CrossAxisAlignment.center,
+                                          children: [
+                                            Expanded(
+                                              flex: 4,
+                                              child: TextFormField(
+                                                controller: entry.batchController,
+                                                enabled: entry.selectedExistingBatch == null,
+                                                decoration: const InputDecoration(
+                                                  labelText: 'Batch Number *',
+                                                  isDense: true,
+                                                  contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                                                  border: OutlineInputBorder(),
+                                                ),
+                                              ),
+                                            ),
+                                            const SizedBox(width: 6),
+                                            Expanded(
+                                              flex: 2,
+                                              child: TextFormField(
+                                                controller: entry.qtyController,
+                                                keyboardType: TextInputType.number,
+                                                decoration: const InputDecoration(
+                                                  labelText: 'Qty *',
+                                                  isDense: true,
+                                                  contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                                                  border: OutlineInputBorder(),
+                                                ),
+                                              ),
+                                            ),
+                                            const SizedBox(width: 6),
+                                            Expanded(
+                                              flex: 3,
+                                              child: OutlinedButton(
+                                                style: OutlinedButton.styleFrom(
+                                                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+                                                  minimumSize: Size.zero,
+                                                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                                ),
+                                                onPressed: entry.selectedExistingBatch != null
+                                                    ? null
+                                                    : () async {
+                                                        final d = await showDatePicker(
+                                                          context: ctx,
+                                                          initialDate: entry.expiryDate,
+                                                          firstDate: DateTime.now().subtract(const Duration(days: 30)),
+                                                          lastDate: DateTime.now().add(const Duration(days: 3650)),
+                                                        );
+                                                        if (d != null) {
+                                                          setModalState(() {
+                                                            entry.expiryDate = d;
+                                                          });
+                                                        }
+                                                      },
+                                                child: Text(
+                                                  entry.selectedExistingBatch != null
+                                                      ? 'Fixed Exp'
+                                                      : '${entry.expiryDate.month}/${entry.expiryDate.day}/${entry.expiryDate.year.toString().substring(2)}',
+                                                  style: const TextStyle(fontSize: 10),
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                }),
+                                Align(
+                                  alignment: Alignment.centerRight,
+                                  child: TextButton.icon(
+                                    onPressed: () {
+                                      setModalState(() {
+                                        entries.add(SuppliedBatchEntry(
+                                          initialBatch: '',
+                                          initialQty: '0',
+                                          initialExpiry: DateTime.now().add(const Duration(days: 365)),
+                                        ));
+                                      });
+                                    },
+                                    icon: const Icon(Icons.add, size: 16),
+                                    label: const Text('Add Batch Split', style: TextStyle(fontSize: 11)),
+                                    style: TextButton.styleFrom(
+                                      padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+                                      minimumSize: Size.zero,
+                                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                    ),
+                                  ),
                                 ),
                               ],
                             ),
@@ -281,12 +428,9 @@ class _SupplierScreenState extends State<SupplierScreen> with SingleTickerProvid
                     });
 
                     final List<Medicine> suppliedBatches = [];
-                    for (int i = 0; i < order.items.length; i++) {
-                      final item = order.items[i];
-                      final batchNum = batchControllers[i].text.trim().isEmpty
-                          ? 'B-UNKNOWN'
-                          : batchControllers[i].text.trim();
-
+                    for (final item in order.items) {
+                      final entries = suppliedEntries[item.barcode]!;
+                      
                       // Resolve metadata from existing inventory
                       final existingMatches = inventory.where((m) => m.barcode == item.barcode).toList();
                       final generic = existingMatches.isNotEmpty ? existingMatches.first.genericName : 'Generic';
@@ -294,19 +438,26 @@ class _SupplierScreenState extends State<SupplierScreen> with SingleTickerProvid
                       final location = existingMatches.isNotEmpty ? existingMatches.first.location : 'Shelf A1';
                       final minQty = existingMatches.isNotEmpty ? existingMatches.first.minQuantity : 15;
 
-                      suppliedBatches.add(Medicine(
-                        name: item.name,
-                        genericName: generic,
-                        barcode: item.barcode,
-                        batchNumber: batchNum,
-                        quantity: item.quantity,
-                        minQuantity: minQty,
-                        expiryDate: expiryDates[i],
-                        dosageForm: dosage,
-                        location: location,
-                        price: item.unitPrice,
-                        supplierName: order.supplierName,
-                      ));
+                      for (final entry in entries) {
+                        final batchNum = entry.batchController.text.trim().isEmpty
+                            ? 'B-UNKNOWN'
+                            : entry.batchController.text.trim();
+                        final qty = int.tryParse(entry.qtyController.text.trim()) ?? 0;
+
+                        suppliedBatches.add(Medicine(
+                          name: item.name,
+                          genericName: generic,
+                          barcode: item.barcode,
+                          batchNumber: batchNum,
+                          quantity: qty,
+                          minQuantity: minQty,
+                          expiryDate: entry.expiryDate,
+                          dosageForm: dosage,
+                          location: location,
+                          price: item.unitPrice,
+                          supplierName: order.supplierName,
+                        ));
+                      }
                     }
 
                     final success = await DatabaseHelper.instance.receiveSupplierOrder(order, suppliedBatches);
@@ -323,7 +474,7 @@ class _SupplierScreenState extends State<SupplierScreen> with SingleTickerProvid
                     await _loadDeficiencies();
                     await _loadOrders();
                   },
-                  child: const Text('Confirm Receive'),
+                  child: const Text('Confirm Check-In'),
                 ),
               ],
             );
