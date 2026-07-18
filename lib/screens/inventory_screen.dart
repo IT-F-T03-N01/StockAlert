@@ -109,10 +109,12 @@ class _InventoryScreenState extends State<InventoryScreen> {
     final nameController = TextEditingController(text: medicine?.name ?? '');
     final genericController = TextEditingController(text: medicine?.genericName ?? '');
     final barcodeController = TextEditingController(text: medicine?.barcode ?? '');
+    final batchController = TextEditingController(text: medicine?.batchNumber ?? '');
     final quantityController = TextEditingController(text: medicine?.quantity.toString() ?? '10');
     final minQtyController = TextEditingController(text: medicine?.minQuantity.toString() ?? '5');
     final priceController = TextEditingController(text: medicine?.price.toString() ?? '1.99');
     final locationController = TextEditingController(text: medicine?.location ?? 'Shelf A1');
+    final supplierController = TextEditingController(text: medicine?.supplierName ?? '');
 
     DateTime selectedDate = medicine?.expiryDate ?? DateTime.now().add(const Duration(days: 365));
     String selectedDosage = medicine?.dosageForm ?? 'Tablet';
@@ -122,27 +124,29 @@ class _InventoryScreenState extends State<InventoryScreen> {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
+      useSafeArea: true, // Native padding protection
       backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       builder: (ctx) {
-        return StatefulBuilder(
-          builder: (context, setModalState) {
-            return Padding(
-              padding: EdgeInsets.only(
-                bottom: MediaQuery.of(context).viewInsets.bottom + 16,
-                top: 24,
-                left: 16,
-                right: 16,
-              ),
-              child: Form(
-                key: formKey,
-                child: SingleChildScrollView(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
+        return SafeArea(
+          child: StatefulBuilder(
+            builder: (context, setModalState) {
+              return Padding(
+                padding: EdgeInsets.only(
+                  bottom: MediaQuery.of(ctx).viewInsets.bottom + 16,
+                  top: 24,
+                  left: 16,
+                  right: 16,
+                ),
+                child: Form(
+                  key: formKey,
+                  child: SingleChildScrollView(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
@@ -171,6 +175,26 @@ class _InventoryScreenState extends State<InventoryScreen> {
                           border: OutlineInputBorder(),
                         ),
                         validator: (v) => v == null || v.trim().isEmpty ? 'Brand name is required' : null,
+                      ),
+                      const SizedBox(height: 12),
+                      TextFormField(
+                        controller: batchController,
+                        decoration: const InputDecoration(
+                          labelText: 'Batch Number *',
+                          prefixIcon: Icon(Icons.tag),
+                          border: OutlineInputBorder(),
+                        ),
+                        validator: (v) => v == null || v.trim().isEmpty ? 'Batch number is required' : null,
+                      ),
+                      const SizedBox(height: 12),
+                      TextFormField(
+                        controller: supplierController,
+                        decoration: const InputDecoration(
+                          labelText: 'Recommended Supplier *',
+                          prefixIcon: Icon(Icons.business),
+                          border: OutlineInputBorder(),
+                        ),
+                        validator: (v) => v == null || v.trim().isEmpty ? 'Supplier is required' : null,
                       ),
                       const SizedBox(height: 12),
                       TextFormField(
@@ -320,12 +344,14 @@ class _InventoryScreenState extends State<InventoryScreen> {
                                 name: nameController.text.trim(),
                                 genericName: genericController.text.trim(),
                                 barcode: barcodeController.text.trim(),
+                                batchNumber: batchController.text.trim(),
                                 quantity: int.parse(quantityController.text.trim()),
                                 minQuantity: int.parse(minQtyController.text.trim()),
                                 expiryDate: selectedDate,
                                 dosageForm: selectedDosage,
                                 location: locationController.text.trim(),
                                 price: double.parse(priceController.text.trim()),
+                                supplierName: supplierController.text.trim(),
                               );
 
                               if (isEdit) {
@@ -351,9 +377,10 @@ class _InventoryScreenState extends State<InventoryScreen> {
               ),
             );
           },
-        );
-      },
-    );
+        ),
+      );
+    },
+  );
   }
 
   Future<void> _deleteMedicine(int id) async {
@@ -526,8 +553,8 @@ class _InventoryScreenState extends State<InventoryScreen> {
                                             ),
                                             const SizedBox(height: 2),
                                             Text(
-                                              '${med.dosageForm} • ${med.genericName}',
-                                              maxLines: 1,
+                                              '${med.dosageForm} • ${med.genericName}\nBatch: ${med.batchNumber} • Supplier: ${med.supplierName}',
+                                              maxLines: 2,
                                               overflow: TextOverflow.ellipsis,
                                               style: theme.textTheme.bodySmall?.copyWith(
                                                 color: theme.textTheme.bodySmall?.color

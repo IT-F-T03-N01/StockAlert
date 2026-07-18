@@ -43,27 +43,32 @@ class _ScannerScreenState extends State<ScannerScreen> {
       return;
     }
 
-    // Lookup in SQLite
-    final medicine = await DatabaseHelper.instance.getMedicineByBarcode(barcode);
+    // Lookup in SQLite: fetch all batches for this barcode
+    final inventory = await DatabaseHelper.instance.getInventory();
+    final barcodeBatches = inventory.where((m) => m.barcode == barcode).toList();
 
-    if (medicine != null) {
+    if (barcodeBatches.isNotEmpty) {
       if (_activeMode == 0) {
-        // Dispense Mode (-1)
-        if (medicine.quantity <= 0) {
+        // Dispense Mode: Fetch soonest to expire batch with stock (FEFO)
+        final fefoMed = await DatabaseHelper.instance.getFefoMedicine(barcode);
+        if (fefoMed == null) {
           _showStatusMessage(
-            'Cannot dispense ${medicine.name}. Stock is already 0!',
+            'Cannot dispense ${barcodeBatches.first.name}. Out of stock in all batches!',
             isSuccess: false,
           );
         } else {
-          final updated = medicine.copyWith(quantity: medicine.quantity - 1);
+          final updated = fefoMed.copyWith(quantity: fefoMed.quantity - 1);
           await DatabaseHelper.instance.updateMedicine(updated);
-          _showStatusMessage('${medicine.name} Dispensed (-1)');
+          final bool isExpired = fefoMed.daysToExpiry <= 0;
+          _showStatusMessage(
+            '${fefoMed.name} (Batch: ${fefoMed.batchNumber}) Dispensed (-1)' +
+                (isExpired ? ' - WARNING: EXPIRED BATCH!' : ''),
+            isSuccess: !isExpired,
+          );
         }
       } else {
-        // Receive Mode (+1)
-        final updated = medicine.copyWith(quantity: medicine.quantity + 1);
-        await DatabaseHelper.instance.updateMedicine(updated);
-        _showStatusMessage('${medicine.name} Restocked (+1)');
+        // Receive Mode: Prompt user to choose which batch to restock or register a new batch
+        _showReceiveStockDialog(barcode, barcodeBatches);
       }
     } else {
       // Barcode not found, show registration dialog
@@ -77,6 +82,184 @@ class _ScannerScreenState extends State<ScannerScreen> {
         _isScanCooldown = false;
       });
     }
+  }
+
+  void _showReceiveStockDialog(String barcode, List<Medicine> existingBatches) {
+    final formKey = GlobalKey<FormState>();
+    final batchController = TextEditingController(text: '');
+    final qtyController = TextEditingController(text: '10');
+    DateTime expiryDate = DateTime.now().add(const Duration(days: 365));
+    final priceController = TextEditingController(text: existingBatches.first.price.toString());
+    final locationController = TextEditingController(text: existingBatches.first.location);
+
+    showDialog(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return AlertDialog(
+              title: Text('Receive Stock: ${existingBatches.first.name}'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Tap an existing batch to add custom quantity:',
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                    ),
+                    const SizedBox(height: 8),
+                    ...existingBatches.map((b) => Card(
+                      margin: const EdgeInsets.only(bottom: 6),
+                      child: ListTile(
+                        dense: true,
+                        title: Text('Batch: ${b.batchNumber} (Stock: ${b.quantity})'),
+                        subtitle: Text(
+                          'Expires: ${b.expiryDate.month}/${b.expiryDate.day}/${b.expiryDate.year}',
+                          style: TextStyle(color: b.statusColor, fontWeight: FontWeight.bold),
+                        ),
+                        trailing: const Icon(Icons.add, color: Colors.teal),
+                        onTap: () async {
+                          final addQtyController = TextEditingController(text: '10');
+                          final int? qtyToAdd = await showDialog<int>(
+                            context: context,
+                            builder: (dialogCtx) => AlertDialog(
+                              title: Text('Restock Batch ${b.batchNumber}'),
+                              content: TextFormField(
+                                controller: addQtyController,
+                                keyboardType: TextInputType.number,
+                                decoration: const InputDecoration(
+                                  labelText: 'Quantity to Add',
+                                  border: OutlineInputBorder(),
+                                ),
+                                autofocus: true,
+                              ),
+                              actions: [
+                                TextButton(
+                                  onPressed: () => Navigator.pop(dialogCtx),
+                                  child: const Text('Cancel'),
+                                ),
+                                ElevatedButton(
+                                  onPressed: () {
+                                    final val = int.tryParse(addQtyController.text);
+                                    Navigator.pop(dialogCtx, val);
+                                  },
+                                  child: const Text('Add Stock'),
+                                ),
+                              ],
+                            ),
+                          );
+
+                          if (qtyToAdd != null && qtyToAdd > 0) {
+                            final updated = b.copyWith(quantity: b.quantity + qtyToAdd);
+                            await DatabaseHelper.instance.updateMedicine(updated);
+                            if (ctx.mounted) {
+                              Navigator.pop(ctx);
+                            }
+                            _showStatusMessage('${b.name} (Batch: ${b.batchNumber}) Restocked (+$qtyToAdd)');
+                          }
+                        },
+                      ),
+                    )),
+                    const Divider(height: 24),
+                    const Text(
+                      'Or Receive a New Supplier Batch:',
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                    ),
+                    const SizedBox(height: 8),
+                    Form(
+                      key: formKey,
+                      child: Column(
+                        children: [
+                          TextFormField(
+                            controller: batchController,
+                            decoration: const InputDecoration(
+                              labelText: 'New Batch Number *',
+                              border: OutlineInputBorder(),
+                            ),
+                            validator: (v) => v == null || v.trim().isEmpty ? 'Required' : null,
+                          ),
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: TextFormField(
+                                  controller: qtyController,
+                                  decoration: const InputDecoration(
+                                    labelText: 'Quantity *',
+                                    border: OutlineInputBorder(),
+                                  ),
+                                  keyboardType: TextInputType.number,
+                                  validator: (v) => int.tryParse(v ?? '') == null ? 'Invalid' : null,
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: OutlinedButton(
+                                  onPressed: () async {
+                                    final d = await showDatePicker(
+                                      context: ctx,
+                                      initialDate: expiryDate,
+                                      firstDate: DateTime.now().subtract(const Duration(days: 30)),
+                                      lastDate: DateTime.now().add(const Duration(days: 3650)),
+                                    );
+                                    if (d != null) {
+                                      setModalState(() => expiryDate = d);
+                                    }
+                                  },
+                                  child: Text(
+                                    '${expiryDate.month}/${expiryDate.day}/${expiryDate.year}',
+                                    style: const TextStyle(fontSize: 11),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    )
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: () async {
+                    if (formKey.currentState!.validate()) {
+                      final sample = existingBatches.first;
+                      final newMed = Medicine(
+                        name: sample.name,
+                        genericName: sample.genericName,
+                        barcode: barcode,
+                        batchNumber: batchController.text.trim(),
+                        quantity: int.parse(qtyController.text.trim()),
+                        minQuantity: sample.minQuantity,
+                        expiryDate: expiryDate,
+                        dosageForm: sample.dosageForm,
+                        location: locationController.text.trim(),
+                        price: double.parse(priceController.text.trim()),
+                      );
+                      await DatabaseHelper.instance.insertMedicine(newMed);
+                      if (ctx.mounted) {
+                        Navigator.pop(ctx);
+                      }
+                      _showStatusMessage(
+                        '${newMed.name} (Batch: ${newMed.batchNumber}) Restocked (+${newMed.quantity})',
+                      );
+                    }
+                  },
+                  child: const Text('Receive Batch'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
   }
 
   void _showStatusMessage(String message, {bool isSuccess = true}) {
@@ -113,10 +296,12 @@ class _ScannerScreenState extends State<ScannerScreen> {
     final formKey = GlobalKey<FormState>();
     final nameController = TextEditingController();
     final genericController = TextEditingController();
+    final batchController = TextEditingController(text: '');
     final qtyController = TextEditingController(text: '10');
     final minQtyController = TextEditingController(text: '5');
     final priceController = TextEditingController(text: '4.99');
     final locationController = TextEditingController(text: 'Shelf A1');
+    final supplierController = TextEditingController(text: '');
     DateTime expiryDate = DateTime.now().add(const Duration(days: 365));
     String dosageForm = 'Tablet';
 
@@ -158,6 +343,24 @@ class _ScannerScreenState extends State<ScannerScreen> {
                         controller: genericController,
                         decoration: const InputDecoration(
                           labelText: 'Generic Name *',
+                          border: OutlineInputBorder(),
+                        ),
+                        validator: (v) => v == null || v.trim().isEmpty ? 'Required' : null,
+                      ),
+                      const SizedBox(height: 8),
+                      TextFormField(
+                        controller: batchController,
+                        decoration: const InputDecoration(
+                          labelText: 'Batch Number *',
+                          border: OutlineInputBorder(),
+                        ),
+                        validator: (v) => v == null || v.trim().isEmpty ? 'Required' : null,
+                      ),
+                      const SizedBox(height: 8),
+                      TextFormField(
+                        controller: supplierController,
+                        decoration: const InputDecoration(
+                          labelText: 'Recommended Supplier *',
                           border: OutlineInputBorder(),
                         ),
                         validator: (v) => v == null || v.trim().isEmpty ? 'Required' : null,
@@ -246,12 +449,14 @@ class _ScannerScreenState extends State<ScannerScreen> {
                         name: nameController.text.trim(),
                         genericName: genericController.text.trim(),
                         barcode: scannedBarcode,
+                        batchNumber: batchController.text.trim(),
                         quantity: int.parse(qtyController.text.trim()),
                         minQuantity: int.parse(minQtyController.text.trim()),
                         expiryDate: expiryDate,
                         dosageForm: dosageForm,
                         location: locationController.text.trim(),
                         price: double.parse(priceController.text.trim()),
+                        supplierName: supplierController.text.trim(),
                       );
 
                       await DatabaseHelper.instance.insertMedicine(newMed);
@@ -259,7 +464,7 @@ class _ScannerScreenState extends State<ScannerScreen> {
                         Navigator.pop(ctx);
                       }
                       if (mounted) {
-                        _showStatusMessage('${newMed.name} Registered successfully!');
+                        _showStatusMessage('${newMed.name} (Batch: ${newMed.batchNumber}) Registered successfully!');
                       }
                     }
                   },

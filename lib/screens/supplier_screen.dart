@@ -19,6 +19,8 @@ class _SupplierScreenState extends State<SupplierScreen> with SingleTickerProvid
 
   // Track checked boxes for purchase order generation
   final Map<String, bool> _selectedItemForOrder = {};
+  final Map<String, int> _orderQuantities = {};
+  final Map<String, double> _orderPrices = {};
 
   @override
   void initState() {
@@ -34,17 +36,44 @@ class _SupplierScreenState extends State<SupplierScreen> with SingleTickerProvid
     super.dispose();
   }
 
-  // Load low stock items from database
+  // Load low stock items from database (grouped by barcode to prevent duplicate batch rows)
   Future<void> _loadDeficiencies() async {
     setState(() => _isLoadingDeficiencies = true);
     final allMeds = await DatabaseHelper.instance.getInventory();
-    final lowStock = allMeds.where((m) => m.isDeficient).toList();
+
+    final Map<String, List<Medicine>> grouped = {};
+    for (final med in allMeds) {
+      grouped.putIfAbsent(med.barcode, () => []).add(med);
+    }
+
+    final List<Medicine> lowStock = [];
+    grouped.forEach((barcode, batches) {
+      final totalQty = batches.fold<int>(0, (sum, m) => sum + m.quantity);
+      final first = batches.first;
+      if (totalQty < first.minQuantity) {
+        lowStock.add(Medicine(
+          id: first.id,
+          name: first.name,
+          genericName: first.genericName,
+          barcode: first.barcode,
+          batchNumber: 'AGGREGATED',
+          quantity: totalQty,
+          minQuantity: first.minQuantity,
+          expiryDate: batches.map((m) => m.expiryDate).reduce((a, b) => a.isBefore(b) ? a : b),
+          dosageForm: first.dosageForm,
+          location: first.location,
+          price: first.price,
+          supplierName: first.supplierName,
+        ));
+      }
+    });
 
     setState(() {
       _deficientMedicines = lowStock;
       for (final med in lowStock) {
-        // Default to selected for order
         _selectedItemForOrder.putIfAbsent(med.barcode, () => true);
+        _orderQuantities.putIfAbsent(med.barcode, () => _calculateSuggestedQuantity(med));
+        _orderPrices.putIfAbsent(med.barcode, () => med.price * 0.65);
       }
       _isLoadingDeficiencies = false;
     });
@@ -60,15 +89,9 @@ class _SupplierScreenState extends State<SupplierScreen> with SingleTickerProvid
     });
   }
 
-  // Map medicine to recommended supplier
+  // Map medicine to recommended supplier dynamically
   String _getRecommendedSupplier(Medicine med) {
-    final name = med.name.toLowerCase();
-    if (name.contains('paracetamol') || name.contains('ibuprofen') || name.contains('cetirizine')) {
-      return 'MediDistributors Inc.';
-    } else if (name.contains('amoxicillin') || name.contains('metformin') || name.contains('atorvastatin')) {
-      return 'Apex Pharmaceutical Labs';
-    }
-    return 'PharmaCorp Global';
+    return med.supplierName;
   }
 
   // Generate order item quantity based on target level
@@ -95,12 +118,13 @@ class _SupplierScreenState extends State<SupplierScreen> with SingleTickerProvid
 
     for (final med in itemsToOrder) {
       final supplier = _getRecommendedSupplier(med);
-      final orderQty = _calculateSuggestedQuantity(med);
+      final orderQty = _orderQuantities[med.barcode] ?? _calculateSuggestedQuantity(med);
+      final orderPrice = _orderPrices[med.barcode] ?? (med.price * 0.65);
       final orderItem = SupplierOrderItem(
         barcode: med.barcode,
         name: med.name,
         quantity: orderQty,
-        unitPrice: med.price * 0.65, // Supplier wholesale cost is ~65% of retail price
+        unitPrice: orderPrice,
       );
 
       supplierGroups.putIfAbsent(supplier, () => []).add(orderItem);
@@ -142,26 +166,171 @@ class _SupplierScreenState extends State<SupplierScreen> with SingleTickerProvid
 
   // Receive and check-in procurement items
   Future<void> _checkInOrder(SupplierOrder order) async {
-    setState(() {
-      _isLoadingOrders = true;
-      _isLoadingDeficiencies = true;
-    });
+    final inventory = await DatabaseHelper.instance.getInventory();
+    final List<TextEditingController> batchControllers = [];
+    final List<DateTime> expiryDates = [];
 
-    final success = await DatabaseHelper.instance.receiveSupplierOrder(order);
-
-    if (!mounted) return;
-    if (success) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Order Checked-In! Inventory restocked for ${order.items.length} items.'),
-          backgroundColor: const Color(0xFF10B981),
-        ),
-      );
+    for (int i = 0; i < order.items.length; i++) {
+      final initials = order.supplierName.split(' ').map((e) => e.isNotEmpty ? e[0] : '').join().toUpperCase();
+      batchControllers.add(TextEditingController(
+        text: 'B-$initials-${DateTime.now().month}${DateTime.now().day}'
+      ));
+      expiryDates.add(DateTime.now().add(const Duration(days: 365)));
     }
 
-    // Reload everything
-    await _loadDeficiencies();
-    await _loadOrders();
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return AlertDialog(
+              title: Text('Check-In Order #${order.id ?? 1}'),
+              content: SizedBox(
+                width: double.maxFinite,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Text(
+                        'Confirm supplied batch details for each received medication:',
+                        style: TextStyle(fontSize: 13, color: Colors.grey),
+                      ),
+                      const SizedBox(height: 12),
+                      ...List.generate(order.items.length, (index) {
+                        final item = order.items[index];
+                        return Card(
+                          margin: const EdgeInsets.only(bottom: 12),
+                          elevation: 0,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            side: BorderSide(color: Theme.of(context).dividerColor.withOpacity(0.3)),
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.all(12.0),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  item.name,
+                                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                                ),
+                                Text(
+                                  'Ordered Qty: ${item.quantity}',
+                                  style: const TextStyle(fontSize: 12, color: Colors.grey),
+                                ),
+                                const SizedBox(height: 10),
+                                TextFormField(
+                                  controller: batchControllers[index],
+                                  decoration: const InputDecoration(
+                                    labelText: 'Supplied Batch Number *',
+                                    isDense: true,
+                                    border: OutlineInputBorder(),
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    const Text('Expiry Date:', style: TextStyle(fontSize: 12)),
+                                    OutlinedButton(
+                                      onPressed: () async {
+                                        final d = await showDatePicker(
+                                          context: ctx,
+                                          initialDate: expiryDates[index],
+                                          firstDate: DateTime.now().subtract(const Duration(days: 30)),
+                                          lastDate: DateTime.now().add(const Duration(days: 3650)),
+                                        );
+                                        if (d != null) {
+                                          setModalState(() {
+                                            expiryDates[index] = d;
+                                          });
+                                        }
+                                      },
+                                      child: Text(
+                                        '${expiryDates[index].month}/${expiryDates[index].day}/${expiryDates[index].year}',
+                                        style: const TextStyle(fontSize: 11),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      }),
+                    ],
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                  },
+                  child: const Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: () async {
+                    Navigator.pop(ctx);
+
+                    setState(() {
+                      _isLoadingOrders = true;
+                      _isLoadingDeficiencies = true;
+                    });
+
+                    final List<Medicine> suppliedBatches = [];
+                    for (int i = 0; i < order.items.length; i++) {
+                      final item = order.items[i];
+                      final batchNum = batchControllers[i].text.trim().isEmpty
+                          ? 'B-UNKNOWN'
+                          : batchControllers[i].text.trim();
+
+                      // Resolve metadata from existing inventory
+                      final existingMatches = inventory.where((m) => m.barcode == item.barcode).toList();
+                      final generic = existingMatches.isNotEmpty ? existingMatches.first.genericName : 'Generic';
+                      final dosage = existingMatches.isNotEmpty ? existingMatches.first.dosageForm : 'Tablet';
+                      final location = existingMatches.isNotEmpty ? existingMatches.first.location : 'Shelf A1';
+                      final minQty = existingMatches.isNotEmpty ? existingMatches.first.minQuantity : 15;
+
+                      suppliedBatches.add(Medicine(
+                        name: item.name,
+                        genericName: generic,
+                        barcode: item.barcode,
+                        batchNumber: batchNum,
+                        quantity: item.quantity,
+                        minQuantity: minQty,
+                        expiryDate: expiryDates[i],
+                        dosageForm: dosage,
+                        location: location,
+                        price: item.unitPrice,
+                        supplierName: order.supplierName,
+                      ));
+                    }
+
+                    final success = await DatabaseHelper.instance.receiveSupplierOrder(order, suppliedBatches);
+
+                    if (success && mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('Order Checked-In! Added ${suppliedBatches.length} supplied batches to inventory.'),
+                          backgroundColor: const Color(0xFF10B981),
+                        ),
+                      );
+                    }
+
+                    await _loadDeficiencies();
+                    await _loadOrders();
+                  },
+                  child: const Text('Confirm Receive'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
   }
 
   @override
@@ -271,7 +440,10 @@ class _SupplierScreenState extends State<SupplierScreen> with SingleTickerProvid
                 final med = _deficientMedicines[index];
                 final suggestedQty = _calculateSuggestedQuantity(med);
                 final supplier = _getRecommendedSupplier(med);
-                final double estCost = med.price * 0.65 * suggestedQty;
+                
+                final currentQty = _orderQuantities[med.barcode] ?? suggestedQty;
+                final currentPrice = _orderPrices[med.barcode] ?? (med.price * 0.65);
+                final double estCost = currentQty * currentPrice;
 
                 return Card(
                   margin: const EdgeInsets.only(bottom: 10),
@@ -282,57 +454,117 @@ class _SupplierScreenState extends State<SupplierScreen> with SingleTickerProvid
                     ),
                   ),
                   child: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 4.0),
-                    child: CheckboxListTile(
-                      activeColor: theme.colorScheme.primary,
-                      title: Text(
-                        med.name,
-                        style: const TextStyle(fontWeight: FontWeight.bold),
-                      ),
-                      subtitle: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Stock: ${med.quantity} (Min: ${med.minQuantity}) • Suggest: $suggestedQty units',
-                            style: const TextStyle(fontSize: 11),
-                          ),
-                          Text(
-                            'Supplier: $supplier',
-                            style: TextStyle(
-                              fontSize: 11,
-                              color: theme.colorScheme.primary,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ],
-                      ),
-                      secondary: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                        decoration: BoxDecoration(
-                          color: isDark ? const Color(0xFF334155) : Colors.grey.shade100,
-                          borderRadius: BorderRadius.circular(8),
+                    padding: const EdgeInsets.all(12.0),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Checkbox(
+                          activeColor: theme.colorScheme.primary,
+                          value: _selectedItemForOrder[med.barcode] ?? false,
+                          onChanged: (val) {
+                            setState(() {
+                              _selectedItemForOrder[med.barcode] = val ?? false;
+                            });
+                          },
                         ),
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            const Text('EST. COST', style: TextStyle(fontSize: 8, color: Colors.grey)),
-                            Text(
-                              '\$${estCost.toStringAsFixed(2)}',
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                color: isDark ? Colors.cyanAccent : Colors.cyan.shade800,
-                                fontSize: 12,
+                        const SizedBox(width: 4),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                med.name,
+                                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
                               ),
-                            ),
-                          ],
+                              const SizedBox(height: 2),
+                              Text(
+                                'Stock: ${med.quantity} (Min: ${med.minQuantity})',
+                                style: const TextStyle(fontSize: 11, color: Colors.grey),
+                              ),
+                              Text(
+                                'Supplier: $supplier',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: theme.colorScheme.primary,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              Row(
+                                children: [
+                                  SizedBox(
+                                    width: 70,
+                                    height: 32,
+                                    child: TextFormField(
+                                      initialValue: currentQty.toString(),
+                                      keyboardType: TextInputType.number,
+                                      style: const TextStyle(fontSize: 12),
+                                      decoration: const InputDecoration(
+                                        labelText: 'Qty',
+                                        isDense: true,
+                                        contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+                                        border: OutlineInputBorder(),
+                                      ),
+                                      onChanged: (val) {
+                                        final parsed = int.tryParse(val);
+                                        if (parsed != null && parsed > 0) {
+                                          _orderQuantities[med.barcode] = parsed;
+                                          setState(() {});
+                                        }
+                                      },
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  SizedBox(
+                                    width: 90,
+                                    height: 32,
+                                    child: TextFormField(
+                                      initialValue: currentPrice.toStringAsFixed(2),
+                                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                      style: const TextStyle(fontSize: 12),
+                                      decoration: const InputDecoration(
+                                        labelText: 'Price \$',
+                                        isDense: true,
+                                        contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+                                        border: OutlineInputBorder(),
+                                      ),
+                                      onChanged: (val) {
+                                        final parsed = double.tryParse(val);
+                                        if (parsed != null && parsed > 0) {
+                                          _orderPrices[med.barcode] = parsed;
+                                          setState(() {});
+                                        }
+                                      },
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
                         ),
-                      ),
-                      value: _selectedItemForOrder[med.barcode] ?? false,
-                      onChanged: (val) {
-                        setState(() {
-                          _selectedItemForOrder[med.barcode] = val ?? false;
-                        });
-                      },
+                        const SizedBox(width: 12),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: isDark ? const Color(0xFF334155) : Colors.grey.shade100,
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const Text('EST. COST', style: TextStyle(fontSize: 8, color: Colors.grey)),
+                              Text(
+                                '\$${estCost.toStringAsFixed(2)}',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  color: isDark ? Colors.cyanAccent : Colors.cyan.shade800,
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 );

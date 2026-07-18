@@ -40,11 +40,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
     int totalUnits = 0;
     int expired = 0;
     int nearExpiry = 0;
-    int deficient = 0;
     List<Medicine> urgent = [];
+
+    // Group quantities by barcode to check safety thresholds
+    final Map<String, int> barcodeQuantities = {};
+    final Map<String, int> barcodeMinQuantities = {};
+    final Map<String, List<Medicine>> barcodeBatches = {};
 
     for (final med in inventory) {
       totalUnits += med.quantity;
+      barcodeQuantities[med.barcode] = (barcodeQuantities[med.barcode] ?? 0) + med.quantity;
+      barcodeMinQuantities[med.barcode] = med.minQuantity;
+      barcodeBatches.putIfAbsent(med.barcode, () => []).add(med);
+
+      // Expirations are evaluated at the batch level
       if (med.daysToExpiry <= 0) {
         expired++;
         urgent.add(med);
@@ -52,13 +61,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
         nearExpiry++;
         urgent.add(med);
       }
-      if (med.isDeficient) {
+    }
+
+    // Count deficiencies at the aggregated product level
+    int deficient = 0;
+    barcodeQuantities.forEach((barcode, totalQty) {
+      final minQty = barcodeMinQuantities[barcode] ?? 0;
+      if (totalQty < minQty) {
         deficient++;
-        if (!urgent.contains(med)) {
-          urgent.add(med);
+        // Add the soonest-to-expire batch of this deficient barcode to the urgent list if not already there
+        final batches = barcodeBatches[barcode]!;
+        batches.sort((a, b) => a.expiryDate.compareTo(b.expiryDate));
+        if (batches.isNotEmpty) {
+          final targetBatch = batches.first;
+          if (!urgent.any((m) => m.id == targetBatch.id)) {
+            urgent.add(targetBatch);
+          }
         }
       }
-    }
+    });
 
     // Sort urgent items: expired first, then near-expiry, then deficient
     urgent.sort((a, b) {
@@ -69,8 +90,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
       return a.quantity.compareTo(b.quantity);
     });
 
+    // Extract unique product count
+    final uniqueProductsCount = barcodeQuantities.keys.length;
+
     setState(() {
-      _totalProducts = inventory.length;
+      _totalProducts = uniqueProductsCount;
       _totalUnits = totalUnits;
       _expiredCount = expired;
       _nearExpiryCount = nearExpiry;
@@ -125,24 +149,29 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Pharmacy Dashboard',
-              style: theme.textTheme.headlineMedium?.copyWith(
-                fontWeight: FontWeight.bold,
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Pharmacy Dashboard',
+                style: theme.textTheme.titleLarge?.copyWith(
+                  fontWeight: FontWeight.bold,
+                ),
               ),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'Real-time inventory and expiry tracking',
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: theme.textTheme.bodyMedium?.color?.withOpacity(0.6),
+              const SizedBox(height: 2),
+              Text(
+                'Real-time inventory and expiry tracking',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.textTheme.bodySmall?.color?.withOpacity(0.6),
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
+        const SizedBox(width: 12),
         IconButton.filledTonal(
           icon: const Icon(Icons.refresh),
           onPressed: _loadDashboardData,
@@ -181,7 +210,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _KpiData(
         title: 'Deficient Stock',
         value: '$_deficientCount',
-        subtitle: 'Below threshold level',
+        subtitle: 'Below safety level',
         icon: Icons.trending_down,
         color: Colors.cyan,
         bgColor: Colors.cyan.withOpacity(isDark ? 0.15 : 0.1),
@@ -195,7 +224,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         crossAxisCount: 2,
         crossAxisSpacing: 12,
         mainAxisSpacing: 12,
-        childAspectRatio: 1.45,
+        childAspectRatio: 1.18, // Taller cards to accommodate text dynamically
       ),
       itemCount: cards.length,
       itemBuilder: (context, index) {
@@ -217,7 +246,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Icon(card.icon, color: card.color, size: 24),
+                  Icon(card.icon, color: card.color, size: 22),
                   Container(
                     width: 8,
                     height: 8,
@@ -228,32 +257,46 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ),
                 ],
               ),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    card.value,
-                    style: theme.textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 26,
-                      color: isDark ? Colors.white : Colors.black87,
+              const SizedBox(height: 4),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        card.value,
+                        style: theme.textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 24,
+                          color: isDark ? Colors.white : Colors.black87,
+                        ),
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    card.title,
-                    style: theme.textTheme.bodyMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                      color: isDark ? Colors.white70 : Colors.black54,
+                    const SizedBox(height: 2),
+                    Text(
+                      card.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        fontWeight: FontWeight.w600,
+                        color: isDark ? Colors.white70 : Colors.black54,
+                        fontSize: 13,
+                      ),
                     ),
-                  ),
-                  Text(
-                    card.subtitle,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: isDark ? Colors.white54 : Colors.black38,
+                    Text(
+                      card.subtitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: isDark ? Colors.white54 : Colors.black38,
+                        fontSize: 10,
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ],
           ),
@@ -337,10 +380,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
             ),
           ),
-          const SizedBox(height: 12),
-          // Legend
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          const SizedBox(height: 16),
+          // Legend using Wrap instead of Row
+          Wrap(
+            spacing: 16,
+            runSpacing: 8,
+            alignment: WrapAlignment.start,
             children: [
               _buildLegendItem(
                 'Healthy (${(healthyRatio * 100).toStringAsFixed(0)}%)',
@@ -398,12 +443,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                'Urgent Action Items',
-                style: theme.textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
+              Expanded(
+                child: Text(
+                  'Urgent Action Items',
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
               ),
+              const SizedBox(width: 8),
               if (_urgentMedicines.isNotEmpty)
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
@@ -416,6 +464,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: const Color(0xFFEF4444),
                       fontWeight: FontWeight.bold,
+                      fontSize: 10,
                     ),
                   ),
                 ),
@@ -432,6 +481,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     const SizedBox(height: 8),
                     Text(
                       'All stock and expiries are perfectly healthy!',
+                      textAlign: TextAlign.center,
                       style: theme.textTheme.bodyMedium?.copyWith(
                         color: theme.textTheme.bodyMedium?.color?.withOpacity(0.6),
                       ),
@@ -452,6 +502,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 final bool isLowStock = med.isDeficient;
 
                 return Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
                     // Expiry/Stock color code indicator
                     Container(
@@ -469,12 +520,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         children: [
                           Text(
                             med.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                             style: theme.textTheme.bodyLarge?.copyWith(
                               fontWeight: FontWeight.bold,
                             ),
                           ),
                           Text(
                             'Generic: ${med.genericName} • Qty: ${med.quantity}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                             style: theme.textTheme.bodySmall?.copyWith(
                               color: theme.textTheme.bodySmall?.color?.withOpacity(0.6),
                             ),
@@ -486,6 +541,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     // Specific alert pill
                     Column(
                       crossAxisAlignment: CrossAxisAlignment.end,
+                      mainAxisAlignment: MainAxisAlignment.center,
                       children: [
                         if (isExpired)
                           Container(
@@ -519,8 +575,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               ),
                             ),
                           ),
-                        const SizedBox(height: 4),
-                        if (isLowStock)
+                        if (isLowStock) ...[
+                          const SizedBox(height: 4),
                           Container(
                             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                             decoration: BoxDecoration(
@@ -528,7 +584,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               borderRadius: BorderRadius.circular(6),
                             ),
                             child: Text(
-                              'LOW STOCK (${med.quantity}/${med.minQuantity})',
+                              'LOW STOCK (${med.quantity})',
                               style: const TextStyle(
                                 color: Colors.cyan,
                                 fontSize: 9,
@@ -536,6 +592,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               ),
                             ),
                           ),
+                        ],
                       ],
                     ),
                   ],

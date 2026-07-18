@@ -106,6 +106,16 @@ class _PharmacyAppState extends State<PharmacyApp> {
       theme: lightTheme,
       darkTheme: darkTheme,
       themeMode: _themeMode,
+      builder: (context, child) {
+        final mediaQueryData = MediaQuery.of(context);
+        final double scale = mediaQueryData.textScaleFactor.clamp(0.85, 1.15);
+        return MediaQuery(
+          data: mediaQueryData.copyWith(
+            textScaleFactor: scale,
+          ),
+          child: child!,
+        );
+      },
       home: NavigationShell(
         themeMode: _themeMode,
         onThemeToggle: _toggleTheme,
@@ -204,7 +214,9 @@ class _NavigationShellState extends State<NavigationShell> {
           ),
         ),
       ),
-      body: _buildCurrentScreen(),
+      body: SafeArea(
+        child: _buildCurrentScreen(),
+      ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _currentIndex,
         onDestinationSelected: (index) {

@@ -5,24 +5,28 @@ class Medicine {
   final String name;
   final String genericName;
   final String barcode;
+  final String batchNumber;
   final int quantity;
   final int minQuantity;
   final DateTime expiryDate;
   final String dosageForm;
   final String location;
   final double price;
+  final String supplierName; // Added supplierName for supplier tracking
 
   const Medicine({
     this.id,
     required this.name,
     required this.genericName,
     required this.barcode,
+    required this.batchNumber,
     required this.quantity,
     required this.minQuantity,
     required this.expiryDate,
     required this.dosageForm,
     required this.location,
     required this.price,
+    this.supplierName = 'PharmaCorp Global', // Default supplier
   });
 
   /// Computes remaining lifespans using date difference logic
@@ -61,12 +65,14 @@ class Medicine {
       'name': name,
       'genericName': genericName,
       'barcode': barcode,
+      'batchNumber': batchNumber,
       'quantity': quantity,
       'minQuantity': minQuantity,
       'expiryDate': expiryDate.toIso8601String(),
       'dosageForm': dosageForm,
       'location': location,
       'price': price,
+      'supplierName': supplierName,
     };
   }
 
@@ -76,12 +82,14 @@ class Medicine {
       name: map['name'] as String,
       genericName: map['genericName'] as String,
       barcode: map['barcode'] as String,
+      batchNumber: map['batchNumber'] as String? ?? 'B-GENERIC',
       quantity: map['quantity'] as int,
       minQuantity: map['minQuantity'] as int,
       expiryDate: DateTime.parse(map['expiryDate'] as String),
       dosageForm: map['dosageForm'] as String,
       location: map['location'] as String,
       price: (map['price'] as num).toDouble(),
+      supplierName: map['supplierName'] as String? ?? 'PharmaCorp Global',
     );
   }
 
@@ -90,24 +98,28 @@ class Medicine {
     String? name,
     String? genericName,
     String? barcode,
+    String? batchNumber,
     int? quantity,
     int? minQuantity,
     DateTime? expiryDate,
     String? dosageForm,
     String? location,
     double? price,
+    String? supplierName,
   }) {
     return Medicine(
       id: id ?? this.id,
       name: name ?? this.name,
       genericName: genericName ?? this.genericName,
       barcode: barcode ?? this.barcode,
+      batchNumber: batchNumber ?? this.batchNumber,
       quantity: quantity ?? this.quantity,
       minQuantity: minQuantity ?? this.minQuantity,
       expiryDate: expiryDate ?? this.expiryDate,
       dosageForm: dosageForm ?? this.dosageForm,
       location: location ?? this.location,
       price: price ?? this.price,
+      supplierName: supplierName ?? this.supplierName,
     );
   }
 }
